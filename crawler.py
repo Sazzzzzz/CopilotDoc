@@ -1,5 +1,10 @@
+"""
+A simple web crawler that fetches and saves HTML content from a documentation website.
+"""
+
 # cSpell:words manim
 
+from typing import List, Literal, overload
 from bs4 import BeautifulSoup
 from time import sleep
 import requests
@@ -7,6 +12,7 @@ import urllib.parse
 import re
 import os
 import logging
+
 
 # Configure logging
 # Define ANSI color codes
@@ -48,11 +54,13 @@ class Content:
         self.url = url
         self.body = content
 
-    def save(self, file_path):
-        file_name = file_path + self.title.replace(" ", "_") + ".html"
-        # Ensure the directory exists before saving
-        os.makedirs(os.path.dirname(file_name), exist_ok=True)
-        with open(file_name, "w", encoding="utf-8") as file:
+    def save(self, file_path: str):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        if os.path.isdir(file_path):
+            safe_title = re.sub(r'[\\/*?:<>|\'"]', "_", self.title)
+            file_path = os.path.join(file_path, f"{safe_title}.html")
+        logger.info(f"Saving content to {file_path}")
+        with open(file_path, "w", encoding="utf-8") as file:
             file.write(self.body)
 
 
@@ -64,17 +72,34 @@ class Website:
         self.url = url
         self.title_tag = title_tag
         self.body_tag = body_tag
-        self.target_pattern = r"^(?!https?://).*\.html$"
+        self.link_pattern = r"^(?!https?://|#).*\.html(#.*)?$"
 
 
 class Crawler:
-    def __init__(self, site: Website) -> None:
-        self.site = site
-        self.visited = []
-        if not os.path.exists(site.name):
-            os.makedirs(site.name)
 
-    def get_page(self, local_url):
+    @overload
+    def __init__(self, site: Website) -> None: ...
+    @overload
+    def __init__(
+        self, name: str, url: str, /, body_tag: str, title_tag: str = "h1"
+    ) -> None: ...
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.visited = []
+        if len(args) == 1 and isinstance(args[0], Website):
+            self.site = args[0]
+
+        elif len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], str):
+            self.site = Website(*args, **kwargs)
+        else:
+            raise TypeError(
+                "Invalid arguments. Expected a Website object or name, url, body_tag, and title_tag."
+            )
+        if not os.path.exists(self.site.name):
+            os.makedirs(self.site.name)
+        self.to_visit: List[str] = [""]
+
+    def get_page(self, local_url: str):
         for i in range(3):
             abs_url = urllib.parse.urljoin(self.site.url, local_url)
             try:
@@ -85,20 +110,30 @@ class Crawler:
         logger.warning(f"Failed to fetch {local_url}, skipping...")
         return None
 
-    def safe_get_tag(self, page_obj: BeautifulSoup, selector: str):
+    def safe_get_tag(
+        self,
+        page_obj: BeautifulSoup,
+        selector: str,
+        content: Literal["text", "html"] = "text",
+    ):
         """
         Get corresponding tag from `page_obj`, specifically used for title and body
         """
         selected_objs = page_obj.select(selector)
-        if selected_objs is not None and len(selected_objs) > 0:
-            return "\n".join([elem.get_text() for elem in selected_objs])
-        return ""
+        if content == "text":
+            if selected_objs is not None and len(selected_objs) > 0:
+                return "\n".join([elem.get_text() for elem in selected_objs])
+            return ""
+        if content == "html":
+            if selected_objs is not None and len(selected_objs) > 0:
+                return "\n".join([str(elem) for elem in selected_objs])
+            return ""
 
     def save(self, bs: BeautifulSoup, local_url: str):
         content = None
         if bs is not None:
-            title = self.safe_get_tag(bs, self.site.title_tag)
-            body = bs.prettify()
+            title: str = self.safe_get_tag(bs, self.site.title_tag)
+            body: str = self.safe_get_tag(bs, self.site.body_tag, "html")
             if title != "" and body != "":
                 content = Content(title, local_url, body)
         if not content:
@@ -106,37 +141,51 @@ class Crawler:
             return None
         content.save(self.site.name + "/" + local_url)
 
-    def crawl(self):
-        main_bs = self.get_page(self.site.url)
-        if not main_bs:
-            logger.error("Failed to fetch the main page.")
-            raise Exception("Failed to fetch the main page.")
-        self.save(main_bs, "")
-        logger.info(f"Successfully crawled and saved: {self.site.url}")
+    def scrape(self, local_url: str):
+        abs_url = urllib.parse.urljoin(self.site.url, local_url)
+        bs = self.get_page(abs_url)
+        if not bs:
+            logger.warning(f"Failed to fetch the page:{abs_url}")
+            return None
+        self.save(bs, local_url)
+        logger.info(f"Successfully crawled and saved: {local_url}")
 
-        target_pages = main_bs.find_all("a", href=re.compile(self.site.target_pattern))
+        target_pages = bs.find_all("a", href=re.compile(self.site.link_pattern))
         for target_page in target_pages:
             try:
                 target_url: str = target_page.attrs["href"]  # type: ignore
             except KeyError:
                 logger.warning("No href attribute found in anchor tag. Skipping...")
                 continue
-            if target_url not in self.visited:
-                self.visited.append(target_url)
-                abs_url = urllib.parse.urljoin(self.site.url, target_url)
+            # target_link format handling
+            if target_url.startswith(".."):
+                target_url = target_url[3:]
+            if target_url.startswith("."):
+                target_url = target_url[1:]
 
-                if bs := self.get_page(abs_url):
-                    self.save(bs, target_url)
-                logger.info(f"Successfully crawled and saved: {abs_url}")
+            # Append legitimate URL to list
+            if target_url not in self.visited and target_url not in self.to_visit:
+                self.to_visit.append(target_url)
+
+    def crawl(self):
+        """
+        Start the crawling process.
+        """
+        logger.info("Crawling started...")
+        while self.to_visit:
+            self.scrape(self.to_visit.pop(0))
+
+        logger.info(
+            f"Crawling completed. A total of {len(self.visited)} pages were crawled."
+        )
 
 
-manim_doc = Website(
-    "manim_doc",
-    "https://docs.manim.community/en/stable/",
-    body_tag="#furo-main-content",
-    title_tag="h1",
-)
-
-crawler = Crawler(manim_doc)
-crawler.crawl()
-logger.info("Crawling completed.")
+if __name__ == "__main__":
+    crawler = Crawler(
+        "manim_doc",
+        "https://docs.manim.community/en/stable/",
+        body_tag="#furo-main-content",
+        title_tag="h1",
+    )
+    crawler.crawl()
+# TODO: Resolve issues with relative links like `../` and `./`. and `...#...`
