@@ -2,3 +2,5 @@ __pycache__/
 .DS_Store
 *_db/
 develop_doc/
+test.*
+*_doc
