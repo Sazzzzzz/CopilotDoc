@@ -8,10 +8,10 @@ from typing import Literal, overload
 from bs4 import BeautifulSoup
 from dataclasses import dataclass  # Import dataclass
 from asyncio import Queue
+from pathlib import Path, PurePosixPath
 import httpx
 import urllib.parse
 import re
-import os
 import logging
 import asyncio
 
@@ -56,14 +56,14 @@ class Content:
     url: str
     body: str
 
-    def save(self, file_path: str):
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        if os.path.isdir(file_path):
+    def save(self, path: Path) -> None:
+        if path.suffix == "":
             escape_characters = re.compile(r'[\\/*?:<>|\'"]')
             safe_title = re.sub(escape_characters, "_", self.title)
-            file_path = os.path.join(file_path, f"{safe_title}.html")
-        logger.info(f"Saving content to {file_path}")
-        with open(file_path, "w", encoding="utf-8") as file:
+            path = path / f"{safe_title}.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Saving content to {path}")
+        with path.open("w", encoding="utf-8") as file:
             file.write(self.body)
 
 
@@ -74,7 +74,7 @@ class Website:
     body_tag: str
     title_tag: str = "h1"
     link_pattern: str = r"^(?!https?://|#).*\.html(#.*)?$"  # Can be defined directly
-    block_ref_pattern: str = r"^#.*$"  # Can be defined directly
+    block_ref_pattern: str = r"#.*$"  # Can be defined directly
 
     @property
     def link_pattern_compiled(self) -> re.Pattern:
@@ -104,8 +104,7 @@ class Crawler:
             raise TypeError(
                 "Invalid arguments. Expected a Website object or name, url, body_tag, and title_tag."
             )
-        if not os.path.exists(self.site.name):
-            os.makedirs(self.site.name)
+        Path(self.site.name).mkdir(parents=True, exist_ok=True)
         self.recorded: set[str] = set()
         self.client = httpx.AsyncClient(follow_redirects=True, timeout=20.0)
         self.to_visit: Queue[str] = Queue()
@@ -150,6 +149,9 @@ class Crawler:
             return ""
 
     def save(self, bs: BeautifulSoup, local_url: str):
+        """
+        Save the content to corresponding file path
+        """
         content = None
         if bs is not None:
             title: str = self.safe_get_tag(bs, self.site.title_tag)
@@ -158,18 +160,33 @@ class Crawler:
                 content = Content(title, local_url, body)
         if not content:
             logger.warning(f"Failed to fetch content from {local_url}. Skipping...")
-            with open("problem_url.txt", "a") as f:
-                f.write(f"Crawler.save: {local_url}\n")
             return None
-        content.save(self.site.name + "/" + local_url)
+        content.save(Path(self.site.name + "/" + local_url))
+
+    def _local_url_formatter(self, local_url: str, target_url: str) -> str:
+        """
+        Format the local URL to a valid path
+        """
+        if local_url == "":
+            return target_url
+        parent_url = str(PurePosixPath(local_url).parent)
+        while target_url.startswith("../"):
+            parent_url = str(PurePosixPath(parent_url).parent)
+            target_url = target_url[3:]
+        if parent_url == ".":
+            return target_url
+        if target_url.startswith("./"):
+            target_url = target_url[2:]
+        elif target_url.startswith("/"):
+            target_url = target_url[1:]
+
+        return parent_url + "/" + target_url
 
     async def scrape(self, local_url: str) -> None:
         abs_url = urllib.parse.urljoin(self.site.url, local_url)
         bs = await self.get_page(abs_url)
         if not bs:
             logger.warning(f"Failed to fetch the page:{abs_url}")
-            with open("problem_url.txt", "a") as f:
-                f.write(f"Crawler.scrape: {local_url}\n")
             return None
         self.save(bs, local_url)
         logger.info(f"Successfully crawled and saved: {local_url}")
@@ -182,24 +199,19 @@ class Crawler:
                 target_url: str = target_page.attrs["href"]  # type: ignore
             except KeyError:
                 logger.warning("No href attribute found in anchor tag. Skipping...")
-
-                with open("problem_url.txt", "a") as f:
-                    f.write(f"Crawler.scrape: {local_url}\n")
                 continue
             # target_link format handling
             target_url = re.sub(self.site.block_ref_pattern_compiled, "", target_url)
-            if target_url.startswith(".."):
-                parent_url = os.path.dirname(local_url)
-                target_url = os.path.join(parent_url, target_url[3:])
-                target_url = os.path.normpath(target_url)
-
-            if target_url.startswith("."):
-                target_url = target_url[1:]
-
+            temp = target_url
+            target_url = self._local_url_formatter(local_url, target_url)
             # Append legitimate URL to list
             if target_url not in self.recorded:
                 self.recorded.add(target_url)
                 await self.to_visit.put(target_url)
+                with open("internal_urls.txt", "a") as f:
+                    f.write("local_url: " + local_url + "\n")
+                    f.write("target_url: " + temp + "\n")
+                    f.write("target_link: " + target_url + "\n\n")
 
     def crawl(self):  # Public synchronous method
         """
@@ -246,7 +258,7 @@ class Crawler:
 
         # Wait for all tasks in the queue to be processed
         logger.info("Waiting for any remaining tasks in queue to complete...")
-        await self.to_visit.join()  # Wait until task_done() called for all items
+        await self.to_visit.join()  # Wait until task_done called for all items
 
         logger.info("Closing HTTP client...")
         await self.client.aclose()
@@ -260,3 +272,6 @@ if __name__ == "__main__":
         title_tag="h1",
     )
     crawler.crawl()
+# TODO: Handling paths
+# TODO: What's all these async functions do?
+# TODO: async version of `crawl`
