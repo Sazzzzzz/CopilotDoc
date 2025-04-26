@@ -202,16 +202,11 @@ class Crawler:
                 continue
             # target_link format handling
             target_url = re.sub(self.site.block_ref_pattern_compiled, "", target_url)
-            temp = target_url
             target_url = self._local_url_formatter(local_url, target_url)
             # Append legitimate URL to list
             if target_url not in self.recorded:
                 self.recorded.add(target_url)
                 await self.to_visit.put(target_url)
-                with open("internal_urls.txt", "a") as f:
-                    f.write("local_url: " + local_url + "\n")
-                    f.write("target_url: " + temp + "\n")
-                    f.write("target_link: " + target_url + "\n\n")
 
     def crawl(self):  # Public synchronous method
         """
