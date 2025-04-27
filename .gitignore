@@ -1,7 +1,7 @@
 __pycache__/
 .DS_Store
 *_db/
-develop_doc/
 test.*
 *_doc
-problem_url.txt
+.vscode/
+langchain_*

@@ -2,11 +2,14 @@
 A simple web crawler that fetches and saves HTML content from a documentation website.
 """
 
-# cSpell:words manim
+# cSpell:words manim, acrawl
+# One should carefully read the docs, instead of devoting 2 days of his valuable time into a crappy crawler
+# before knowing there is a `Website` class in `langchain_community.document_loaders`
+# :-(
 
 from typing import Literal, overload
 from bs4 import BeautifulSoup
-from dataclasses import dataclass  # Import dataclass
+from dataclasses import dataclass
 from asyncio import Queue
 from pathlib import Path, PurePosixPath
 import httpx
@@ -73,8 +76,8 @@ class Website:
     url: str
     body_tag: str
     title_tag: str = "h1"
-    link_pattern: str = r"^(?!https?://|#).*\.html(#.*)?$"  # Can be defined directly
-    block_ref_pattern: str = r"#.*$"  # Can be defined directly
+    link_pattern: str = r"^(?!https?://|#).*\.html(#.*)?$"
+    block_ref_pattern: str = r"#.*$"
 
     @property
     def link_pattern_compiled(self) -> re.Pattern:
@@ -185,8 +188,8 @@ class Crawler:
     async def scrape(self, local_url: str) -> None:
         abs_url = urllib.parse.urljoin(self.site.url, local_url)
         bs = await self.get_page(abs_url)
-        if not bs:
-            logger.warning(f"Failed to fetch the page:{abs_url}")
+        if bs is None:
+            logger.warning(f"Failed to fetch the page: {abs_url}")
             return None
         self.save(bs, local_url)
         logger.info(f"Successfully crawled and saved: {local_url}")
@@ -208,27 +211,7 @@ class Crawler:
                 self.recorded.add(target_url)
                 await self.to_visit.put(target_url)
 
-    def crawl(self):  # Public synchronous method
-        """
-        Start the crawling process. This method is synchronous and
-        runs the internal async crawling loop.
-        """
-        logger.info("Initiating crawling process...")
-        try:
-            asyncio.run(self._async_crawl())
-        except KeyboardInterrupt:
-            logger.info("Crawling interrupted by user.")
-        except Exception as e:
-            logger.critical(
-                f"An unexpected error occurred during crawl initiation or execution: {e}",
-                exc_info=True,
-            )
-        finally:
-            logger.info(
-                f"Crawling process finished. A total of {len(self.recorded)} URLs were recorded."
-            )
-
-    async def _async_crawl(self):  # Private async method
+    async def acrawl(self):  # Private async method
         """
         Internal asynchronous crawling loop.
         """
@@ -258,6 +241,26 @@ class Crawler:
         logger.info("Closing HTTP client...")
         await self.client.aclose()
 
+    def crawl(self):  # Public synchronous method
+        """
+        Start the crawling process. This method is synchronous and
+        runs the internal async crawling loop.
+        """
+        logger.info("Initiating crawling process...")
+        try:
+            asyncio.run(self.acrawl())
+        except KeyboardInterrupt:
+            logger.info("Crawling interrupted by user.")
+        except Exception as e:
+            logger.critical(
+                f"An unexpected error occurred during crawl initiation or execution: {e}",
+                exc_info=True,
+            )
+        finally:
+            logger.info(
+                f"Crawling process finished. A total of {len(self.recorded)} URLs were recorded."
+            )
+
 
 if __name__ == "__main__":
     crawler = Crawler(
@@ -267,6 +270,4 @@ if __name__ == "__main__":
         title_tag="h1",
     )
     crawler.crawl()
-# TODO: Handling paths
 # TODO: What's all these async functions do?
-# TODO: async version of `crawl`
